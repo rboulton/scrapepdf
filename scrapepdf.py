@@ -61,13 +61,17 @@ class FontSpec(object):
 
 
 class DimensionedElement(object):
+    def __init__(self):
+        self.xoffset = 0
+        self.yoffset = 0
+
     @property
     def top(self):
-        return float(self.element.attrib['top'])
+        return float(self.element.attrib['top']) + self.yoffset
 
     @property
     def left(self):
-        return float(self.element.attrib['left'])
+        return float(self.element.attrib['left']) + self.xoffset
 
     @property
     def bottom(self):
@@ -103,10 +107,13 @@ class Text(DimensionedElement):
         return int(self.element.attrib['font'])
 
     def __str__(self):
-        return "Text(%s, %s, %s)" % (self.text, self.page.number, self.fontspec)
+        return "Text(%s, %s, %s, %s)" % (self.text, self.page.number,
+                                         self.fontspec, self.props)
 
     def __repr__(self):
-        return "<Text(%r, page=%s, fontspec=%r)>" % (etree.tostring(self.element, encoding=unicode), self.page.number, self.fontspec)
+        return "<Text(%r, page=%s, fontspec=%r, props=%r)>" % \
+            (etree.tostring(self.element, encoding=unicode),
+             self.page.number, self.fontspec, self.props)
 
 
 class Page(DimensionedElement):
@@ -158,11 +165,15 @@ class PdfToHTMLOutputParser(object):
         for event, page in etree.iterwalk(self.tree, tag='page'):
             yield Page(page)
 
-    def text(self, page=None):
+    def text(self, page=None, merge_verticals=False):
         """Get the text items.
 
         If `page` is supplied, it should be a Page (as returned by
         self.pages())
+
+        If `merge_verticals` is supplied, the vertical offsets of items will be
+        adjusted such that pages following the first appear immediately after
+        the 
 
         """
         def text_for_page(page):
@@ -171,10 +182,35 @@ class PdfToHTMLOutputParser(object):
                 yield Text(text, page, self.fontspec(text.attrib['font']))
 
         if page is None:
-            for event, page in etree.iterwalk(self.tree, tag='page'):
-                page = Page(page)
-                for item in text_for_page(page):
-                    yield(item)
+            if merge_verticals:
+                offset = 0
+                for event, page in etree.iterwalk(self.tree, tag='page'):
+                    page = Page(page)
+                    items = list(text_for_page(page))
+                    if len(items) == 0:
+                        continue
+                    ymin = 9999999999999999
+                    ymax = 0
+                    for item in items:
+                        if item.text.strip() == '':
+                            continue
+                        ymin = min(ymin, item.top)
+                        ymax = max(ymax, item.bottom)
+                    print "Page %s: offset=%.1f, ymin=%.1f, ymax=%.1f" % (
+                        page.number, offset, ymin, ymax)
+
+                    for item in items:
+                        if item.text.strip() == '':
+                            continue
+                        item.yoffset = offset - ymin
+                        print '  Item:', item.yoffset, item.top, repr(item.text)
+                        yield(item)
+                    offset += (ymax - ymin)
+            else:
+                for event, page in etree.iterwalk(self.tree, tag='page'):
+                    page = Page(page)
+                    for item in text_for_page(page):
+                        yield(item)
         else:
             for item in text_for_page(page):
                 yield(item)
@@ -241,6 +277,19 @@ def calc_lines(items):
     return groups
 
 
+def linear_dist((a1, a2), (b1, b2)):
+    """Return the linear distance between two ranges (a1->a2) and (b1->b2).
+
+    """
+    if a1 < b1:
+        dist = b1 - a2
+    else:
+        dist = a1 - b2
+    if dist < 0:
+        return 0
+    return dist
+
+
 class TextArea(object):
     def __init__(self, item):
         self.left = item.left
@@ -290,9 +339,15 @@ class TextArea(object):
         self.bottom = max(self.bottom, item.bottom)
         self.grab = [0, 0, 0, 0]
         for k, v in item.props.iteritems():
-            if k == 'rhsfollow':
+            if k == 'grableft':
+                self.grab[0] = float(v)
+            elif k == 'grabright':
                 self.grab[1] = float(v)
-            if k not in self.props:
+            elif k == 'grabtop':
+                self.grab[2] = float(v)
+            elif k == 'grabbottom':
+                self.grab[3] = float(v)
+            elif k not in self.props:
                 self.props[k] = v
 
     def assign_lines(self):
@@ -300,6 +355,79 @@ class TextArea(object):
 
         """
         self.lines = calc_lines(self.items)
+
+    @staticmethod
+    def line_text(line):
+        """Get the text from a line of items, inserting space if needed.
+
+        """
+        lineitems = []
+        previtem = None
+        for item in line:
+            if previtem and \
+                linear_dist((previtem.left, previtem.right),
+                            (item.left, item.right)) > item.fontspec.size:
+                # Add a space when there's a gap between items
+                lineitems.append(' ')
+            lineitems.append(item.text)
+            previtem = item
+        return ''.join(lineitems).strip()
+
+    @property
+    def text(self):
+        """Get the text in the area as a string, separated by newlines.
+
+        """
+        result = []
+        for line in self.lines:
+            result.append(self.line_text(line))
+            result.append('\n')
+        return ''.join(result).strip()
+
+    @property
+    def segments(self):
+        """Get the segements of text in an area.
+
+        Usually, this is just the lines, but if any items contain the
+        "startitem" property, items are split on this property instead.
+
+        """
+        startitem = False
+        for item in self.items:
+            if item.props.get('startitem', None):
+                startitem = True
+                break
+
+        result = []
+        if startitem:
+            segment = []
+
+            for line in self.lines:
+                linesegment = []
+                for item in line:
+                    if item.props.get('startitem', None):
+                        line_text = self.line_text(linesegment)
+                        if line_text:
+                            segment.append(u'\n')
+                            segment.append(line_text)
+                        segment_text = ''.join(segment).strip()
+                        if segment_text:
+                            result.append(segment_text)
+                        linesegment = [item]
+                        segment = []
+                    else:
+                        linesegment.append(item)
+                line_text = self.line_text(linesegment)
+                if line_text:
+                    segment.append(u'\n')
+                    segment.append(line_text)
+            segment_text = ''.join(segment).strip()
+            if segment_text:
+                result.append(segment_text)
+        else:
+            for line in self.lines:
+                result.append(self.line_text(line))
+        return result
 
     def __str__(self):
         return "TextArea((%.1f, %.1f), (%.1f, %.1f))" % \
@@ -327,13 +455,13 @@ def act_bullet():
     """
     def fn(item):
         ltext = item.text.lstrip()
-        if ltext.startswith(u'\uf0b7'):
+        if ltext[0] == u'\uf0b7' or ltext[0] == u'\uf0a7':
             item.props['startitem'] = True
             item.text = ltext[1:]
             if item.text.strip() == '':
                 # There's no text after the bullet, so we should try to attach
                 # to a following item.
-                item.props['rhsfollow' ] = 300
+                item.props['grabright'] = 300
     return fn
 
 def act_weights():
@@ -373,9 +501,8 @@ def act_colon_end():
     def fn(item):
         text = item.text.strip()
         if text.endswith(':'):
-            item.props['rhsfollow'] = 300
+            item.props['grabright'] = 300
     return fn
-
 
 class TextGrouper(object):
     """Code to group text objects on a page into some kind of meaningful form.
@@ -427,7 +554,7 @@ class TextGrouper(object):
 
         if closest is None or \
            closest[2] > float(item.fontspec.size) or \
-           closest[3] > item.height:
+           closest[3] > item.height / 2:
             area = TextArea(item)
             self.areas.append(area)
         else:
@@ -484,22 +611,115 @@ class TextGrouper(object):
                     print "   ", repr(item.text), item.fontspec, item.props
                 print '  ]'
 
+def iter_areas():
+    #import scraperwiki
+    #import StringIO
 
-if __name__ == '__main__':
+    #pdfurl = "http://www.appc.org.uk/appc/filemanager/root/site_assets/pdfs/appc_register_entry_for_1_december_2009_to_28_february_2010.pdf"
+    #pdf = scraperwiki.scrape(pdfurl)
+    #xml = scraperwiki.pdftoxml(pdf)
+    #doc = PdfToHTMLOutputParser(StringIO.StringIO(xml))
+
     import sys
-    fd = open(sys.argv[1])
-    doc = PdfToHTMLOutputParser(fd)
-    for page in doc.pages():
-        grouper = TextGrouper()
-        grouper.add_patterns(
-            ("Address(es) in UK", "colhead"),
-            ("Contact", "colhead"),
-            ("Offices outside UK", "heading"),
-            (re.compile("providing PA consultancy services this quarter",
-                        re.IGNORECASE), "heading"),
-            (re.compile("clients for whom", re.IGNORECASE), "heading"),
-        )
-        grouper.group(doc.text(page))
-        grouper.display()
-        #grouper.display_full()
-        print
+    doc = PdfToHTMLOutputParser(open(sys.argv[1]))
+
+    org = {}
+    grouper = TextGrouper()
+    grouper.add_patterns(
+        (re.compile("APPC register entry ", re.IGNORECASE), "dates"),
+        ("Address(es) in UK", "address"),
+        ("Address in UK", "address"),
+        ("Contact", "contact"),
+        ("Offices outside UK", "section"),
+        (re.compile("providing PA consultancy services",
+                    re.IGNORECASE), "section"),
+        (re.compile("clients for whom", re.IGNORECASE), "section"),
+    )
+    def font_0(item):
+        if item.fontspec.number == 0:
+            item.props['type'] = 'name'
+            item.props['grabbottom'] = 20
+    grouper.special_fns.append(font_0)
+    grouper.group(doc.text(merge_verticals=True))
+    grouper.display()
+    #grouper.display_full()
+    for area in grouper.areas:
+        yield area
+
+def store_org(org):
+    if len(org.data) == 0:
+        return
+    import pprint
+    pprint.pprint(org.data)
+
+# Map from section names to the names we want to store:
+section_maps = {
+    'address': 'address',
+    'contact': 'contact',
+    'dates': 'dates',
+    'name': 'name',
+    'sect_Fee-Paying Clients for whom only UK monitoring services provided this quarter': 'monitoring',
+    'sect_Fee-Paying clients for whom UK PA consultancy services provided this quarter': 'consultancy',
+    'sect_Offices outside UK': 'outside_offices',
+    'sect_Pro-Bono Clients for whom consultancy and/or monitoring services have been provided\nthis quarter': 'probono',
+    'sect_Pro-Bono Clients for whom consultancy and/or monitoring services have been provided this\nquarter': 'probono',
+    'sect_Pro-Bono Clients for whom consultancy and/or monitoring services have been provided this quarter': 'probono',
+    'sect_Staff (employed and sub-contracted) providing PA consultancy services this quarter': 'staff',
+}
+
+class Organisation(object):
+    def __init__(self):
+        self.data = {}
+    def add(self, section, value):
+        if isinstance(value, basestring):
+            value = [value]
+        section = section_maps.get(section, section)
+        self.data.setdefault(section, []).extend(value)
+
+org = Organisation()
+state = {}
+for area in iter_areas():
+    if area.items[0].fontspec.number == 0:
+        store_org(org)
+        org = Organisation()
+        org.add('name', area.text)
+        state = {}
+        continue
+
+    itemtype = area.items[0].props.get('type', None)
+    if itemtype is not None:
+        if itemtype == 'dates':
+            org.add('dates', area.text)
+        elif itemtype == 'address':
+            state['address_x'] = (area.left, area.right)
+        elif itemtype == 'contact':
+            state['contact_x'] = (area.left, area.right)
+        elif itemtype == 'section':
+            state['section'] = area.text
+            state['address_x'] = None
+            state['contact_x'] = None
+        else:
+            raise ValueError("Unhandled itemtype %r" % itemtype)
+        continue
+
+    address_x = state.get('address_x', None)
+    if address_x is not None:
+        dist = linear_dist(address_x, (area.left, area.right))
+        if dist == 0:
+            org.add('address', area.segments)
+            continue
+
+    contact_x = state.get('contact_x', None)
+    if contact_x is not None:
+        dist = linear_dist(contact_x, (area.left, area.right))
+        if dist == 0:
+            org.add('contact', area.segments)
+            continue
+
+    section = state.get('section', None)
+    if section is not None:
+        org.add('sect_' + section, area.segments)
+        continue
+
+    print "UNHANDLED:", state, area, repr(area.text)
+store_org(org)
