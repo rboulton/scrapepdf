@@ -35,7 +35,7 @@ def iter_areas(filename):
         grouper.clear_areas()
         grouper.group(doc.text(page=page))
         #grouper.display()
-        grouper.display_full()
+        #grouper.display_full()
         for area in grouper.areas:
             yield area
 
