@@ -17,7 +17,6 @@ def iter_areas(filename):
     import sys
     doc = scrapepdf.PdfToHTMLOutputParser(open(filename))
 
-    org = {}
     grouper = scrapepdf.TextGrouper()
     grouper.add_patterns(
         (re.compile("DAVID CAMERON:"), "CAMERON"),
