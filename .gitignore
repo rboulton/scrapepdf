@@ -1,3 +1,5 @@
 examples/debate/*.pdf
 examples/debate/*.xml
+examples/marriage/*.pdf
+examples/marriage/*.xml
 *.pyc
