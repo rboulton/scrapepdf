@@ -533,6 +533,14 @@ class TextGrouper(object):
             act_colon_end(),
         ]
 
+        # merge_char_width is the maximum number of character widths that items
+        # can be apart horizontally before being merged.
+        self.merge_char_width = 1
+
+        # If merge_left_margin_only is True, items will only be merged
+        # horizontally baesd on the left margin position.
+        self.merge_left_margin_only = False
+
     def clear_areas(self):
         """Clear the text areas found so far by the grouper.
 
@@ -558,6 +566,10 @@ class TextGrouper(object):
             if item.props.get('type', None) != None:
                 if area.props.get('type', None) != item.props['type']:
                     continue
+            if self.merge_left_margin_only:
+                if (abs(area.left - item.left) >
+                    float(item.fontspec.size) * self.merge_char_width):
+                    continue
             hdist, vdist, dist = area.dist(item)
             if closest is None:
                 closest = (num, dist, hdist, vdist)
@@ -566,7 +578,7 @@ class TextGrouper(object):
                 closest = (num, dist, hdist, vdist)
 
         if closest is None or \
-           closest[2] > float(item.fontspec.size) or \
+           closest[2] > float(item.fontspec.size) * self.merge_char_width or \
            closest[3] > item.height / 2:
             area = TextArea(item)
             self.areas.append(area)
