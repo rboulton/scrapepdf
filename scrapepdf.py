@@ -165,15 +165,15 @@ class PdfToHTMLOutputParser(object):
         for event, page in etree.iterwalk(self.tree, tag='page'):
             yield Page(page)
 
-    def text(self, page=None, merge_verticals=False):
+    def text(self, page=None, startpagenum=1, merge_verticals=False):
         """Get the text items.
 
         If `page` is supplied, it should be a Page (as returned by
         self.pages())
 
         If `merge_verticals` is supplied, the vertical offsets of items will be
-        adjusted such that pages following the first appear immediately after
-        the 
+        adjusted such that items at the top of a page have a vertical position
+        just bigger than the items at the bottom of the previous page.
 
         """
         def text_for_page(page):
@@ -184,7 +184,11 @@ class PdfToHTMLOutputParser(object):
         if page is None:
             if merge_verticals:
                 offset = 0
+                pagenum = 0
                 for event, page in etree.iterwalk(self.tree, tag='page'):
+                    pagenum += 1
+                    if pagenum < startpagenum:
+                        continue
                     page = Page(page)
                     items = list(text_for_page(page))
                     if len(items) == 0:
@@ -196,14 +200,14 @@ class PdfToHTMLOutputParser(object):
                             continue
                         ymin = min(ymin, item.top)
                         ymax = max(ymax, item.bottom)
-                    print "Page %s: offset=%.1f, ymin=%.1f, ymax=%.1f" % (
-                        page.number, offset, ymin, ymax)
+                    #print "Page %s: offset=%.1f, ymin=%.1f, ymax=%.1f" % (
+                    #    page.number, offset, ymin, ymax)
 
                     for item in items:
                         if item.text.strip() == '':
                             continue
                         item.yoffset = offset - ymin
-                        print '  Item:', item.yoffset, item.top, repr(item.text)
+                        #print '  Item:', item.yoffset, item.top, repr(item.text)
                         yield(item)
                     offset += (ymax - ymin)
             else:
@@ -529,6 +533,15 @@ class TextGrouper(object):
             act_colon_end(),
         ]
 
+    def clear_areas(self):
+        """Clear the text areas found so far by the grouper.
+
+        Allows the same grouper to be used for another page, or other area of
+        a document.
+
+        """
+        self.areas = []
+
     def add_patterns(self, *titles):
         self.patterns.extend(titles)
 
@@ -610,116 +623,3 @@ class TextGrouper(object):
                 for item in line:
                     print "   ", repr(item.text), item.fontspec, item.props
                 print '  ]'
-
-def iter_areas():
-    #import scraperwiki
-    #import StringIO
-
-    #pdfurl = "http://www.appc.org.uk/appc/filemanager/root/site_assets/pdfs/appc_register_entry_for_1_december_2009_to_28_february_2010.pdf"
-    #pdf = scraperwiki.scrape(pdfurl)
-    #xml = scraperwiki.pdftoxml(pdf)
-    #doc = PdfToHTMLOutputParser(StringIO.StringIO(xml))
-
-    import sys
-    doc = PdfToHTMLOutputParser(open(sys.argv[1]))
-
-    org = {}
-    grouper = TextGrouper()
-    grouper.add_patterns(
-        (re.compile("APPC register entry ", re.IGNORECASE), "dates"),
-        ("Address(es) in UK", "address"),
-        ("Address in UK", "address"),
-        ("Contact", "contact"),
-        ("Offices outside UK", "section"),
-        (re.compile("providing PA consultancy services",
-                    re.IGNORECASE), "section"),
-        (re.compile("clients for whom", re.IGNORECASE), "section"),
-    )
-    def font_0(item):
-        if item.fontspec.number == 0:
-            item.props['type'] = 'name'
-            item.props['grabbottom'] = 20
-    grouper.special_fns.append(font_0)
-    grouper.group(doc.text(merge_verticals=True))
-    grouper.display()
-    #grouper.display_full()
-    for area in grouper.areas:
-        yield area
-
-def store_org(org):
-    if len(org.data) == 0:
-        return
-    import pprint
-    pprint.pprint(org.data)
-
-# Map from section names to the names we want to store:
-section_maps = {
-    'address': 'address',
-    'contact': 'contact',
-    'dates': 'dates',
-    'name': 'name',
-    'sect_Fee-Paying Clients for whom only UK monitoring services provided this quarter': 'monitoring',
-    'sect_Fee-Paying clients for whom UK PA consultancy services provided this quarter': 'consultancy',
-    'sect_Offices outside UK': 'outside_offices',
-    'sect_Pro-Bono Clients for whom consultancy and/or monitoring services have been provided\nthis quarter': 'probono',
-    'sect_Pro-Bono Clients for whom consultancy and/or monitoring services have been provided this\nquarter': 'probono',
-    'sect_Pro-Bono Clients for whom consultancy and/or monitoring services have been provided this quarter': 'probono',
-    'sect_Staff (employed and sub-contracted) providing PA consultancy services this quarter': 'staff',
-}
-
-class Organisation(object):
-    def __init__(self):
-        self.data = {}
-    def add(self, section, value):
-        if isinstance(value, basestring):
-            value = [value]
-        section = section_maps.get(section, section)
-        self.data.setdefault(section, []).extend(value)
-
-org = Organisation()
-state = {}
-for area in iter_areas():
-    if area.items[0].fontspec.number == 0:
-        store_org(org)
-        org = Organisation()
-        org.add('name', area.text)
-        state = {}
-        continue
-
-    itemtype = area.items[0].props.get('type', None)
-    if itemtype is not None:
-        if itemtype == 'dates':
-            org.add('dates', area.text)
-        elif itemtype == 'address':
-            state['address_x'] = (area.left, area.right)
-        elif itemtype == 'contact':
-            state['contact_x'] = (area.left, area.right)
-        elif itemtype == 'section':
-            state['section'] = area.text
-            state['address_x'] = None
-            state['contact_x'] = None
-        else:
-            raise ValueError("Unhandled itemtype %r" % itemtype)
-        continue
-
-    address_x = state.get('address_x', None)
-    if address_x is not None:
-        dist = linear_dist(address_x, (area.left, area.right))
-        if dist == 0:
-            org.add('address', area.segments)
-            continue
-
-    contact_x = state.get('contact_x', None)
-    if contact_x is not None:
-        dist = linear_dist(contact_x, (area.left, area.right))
-        if dist == 0:
-            org.add('contact', area.segments)
-            continue
-
-    section = state.get('section', None)
-    if section is not None:
-        org.add('sect_' + section, area.segments)
-        continue
-
-    print "UNHANDLED:", state, area, repr(area.text)
-store_org(org)
