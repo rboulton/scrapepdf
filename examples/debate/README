@@ -1,0 +1,6 @@
+wget http://news.bbc.co.uk/1/shared/bsp/hi/pdfs/16_04_10_firstdebate.pdf
+wget http://news.bbc.co.uk/1/shared/bsp/hi/pdfs/23_04_10_seconddebate.pdf
+pdftohtml -xml 16_04_10_firstdebate.pdf
+pdftohtml -xml 23_04_10_seconddebate.pdf
+python scrapedebate 16_04_10_firstdebate.pdf >16_04_10_firstdebate.json
+python scrapedebate 23_04_10_seconddebate.pdf >23_04_10_seconddebate.json
