@@ -1,0 +1,3 @@
+examples/debate/*.pdf
+examples/debate/*.xml
+*.pyc
