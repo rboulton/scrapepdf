@@ -1,5 +1,0 @@
-Parsing the list of approved places for marriage in scotland:
-
-wget http://www.gro-scotland.gov.uk/files1/registration/approved-places-for-civil-marriage-by-place-name.pdf
-pdftohtml -xml approved-places-for-civil-marriage-by-place-name.pdf
-parse_gro_scotland_marriage_places.py approved-places-for-civil-marriage-by-place-name.xml
